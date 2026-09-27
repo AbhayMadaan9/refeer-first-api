@@ -12,7 +12,7 @@ import { localDayEnd, localDayKeyToUtcDate, localJobDate, scheduleSameDay } from
 const app = Fastify({ logger: true });
 const jobInput = z.object({ title: z.string().min(1), company: z.string().min(1), location: z.string().optional(), jobUrl: z.string().url(), source: z.string().min(1), linkedinUrl: z.string().url().optional(), logoUrl: z.string().url().optional() });
 const authInput = z.object({ email: z.string().email(), password: z.string().min(8), name: z.string().min(1).optional(), timezone: z.string().optional() });
-app.register(cors, { origin: true, credentials: true });
+app.register(cors, { origin: process.env.FRONTEND_URL ?? true, credentials: true });
 app.register(cookie);
 app.register(jwt, { secret: process.env.AUTH_SECRET ?? 'development-only-change-me', cookie: { cookieName: 'rf_token', signed: false } });
 app.setErrorHandler((error, request, reply) => {
@@ -34,7 +34,8 @@ async function authenticatedUser(request: any, reply: any) {
 }
 
 function setAuthCookie(reply: any, token: string) {
-  reply.setCookie('rf_token', token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 60 * 60 * 24 * 30 });
+  const isProduction = process.env.NODE_ENV === 'production';
+  reply.setCookie('rf_token', token, { httpOnly: true, sameSite: isProduction ? 'none' : 'lax', secure: isProduction, path: '/', maxAge: 60 * 60 * 24 * 30 });
 }
 
 app.get('/health', async () => ({ ok: true, service: 'referral-first-api' }));
