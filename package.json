@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate --schema prisma/schema.prisma && tsc --project tsconfig.json",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "db:push": "prisma db push --schema prisma/schema.prisma"
   },
   "dependencies": {
     "@fastify/cookie": "^10.0.1",
