@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import { Queue } from 'bullmq';
-import IORedis from 'ioredis';
+import { Redis } from 'ioredis';
 
-export const redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: null });
+export const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: null });
 export const notificationQueue = new Queue('referral-notifications', { connection: redis });
 
 export async function enqueueNotification(notificationId: string, scheduledAt: Date) {
