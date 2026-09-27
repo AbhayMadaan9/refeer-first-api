@@ -1,0 +1,75 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  passwordHash String?
+  timezone  String   @default("UTC")
+  followUpIntervalMinutes Int @default(180)
+  applyDirectDelayMinutes Int @default(360)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  jobs      Job[]
+  notifications Notification[]
+}
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  websiteUrl  String?
+  linkedinUrl String?
+  logoUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  jobs        Job[]
+}
+
+model Job {
+  id                             String   @id @default(cuid())
+  userId                         String
+  companyId                      String
+  title                          String
+  location                       String?
+  jobUrl                         String
+  normalizedJobUrl               String
+  source                         String
+  jobDate                        DateTime @db.Date
+  referralStatus                 String   @default("NOT_REQUESTED")
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
+  referralRequestedAt            DateTime?
+  referralReceivedAt             DateTime?
+  nextFollowUpAt                DateTime?
+  applyDirectNotificationAt     DateTime?
+  applyDirectNotificationSentAt DateTime?
+  deletedAt                      DateTime?
+  user                           User     @relation(fields: [userId], references: [id])
+  company                        Company  @relation(fields: [companyId], references: [id])
+  notifications                  Notification[]
+  @@unique([userId, normalizedJobUrl])
+  @@index([userId, jobDate])
+  @@index([userId, deletedAt])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  jobId       String
+  type        String
+  scheduledAt DateTime
+  sentAt      DateTime?
+  status      String   @default("SCHEDULED")
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+  job         Job      @relation(fields: [jobId], references: [id])
+  @@unique([jobId, type, scheduledAt])
+  @@index([status, scheduledAt])
+}
