@@ -12,7 +12,8 @@ import { localDayEnd, localDayKeyToUtcDate, localJobDate, scheduleSameDay } from
 const app = Fastify({ logger: true });
 const jobInput = z.object({ title: z.string().min(1), company: z.string().min(1), location: z.string().optional(), jobUrl: z.string().url(), source: z.string().min(1), linkedinUrl: z.string().url().optional(), logoUrl: z.string().url().optional() });
 const authInput = z.object({ email: z.string().email(), password: z.string().min(8), name: z.string().min(1).optional(), timezone: z.string().optional() });
-app.register(cors, { origin: process.env.FRONTEND_URL ?? true, credentials: true });
+const allowedOrigins = new Set([process.env.FRONTEND_URL, 'http://localhost:3000'].filter((origin): origin is string => Boolean(origin)).map(origin => origin.replace(/\/+$/, '')));
+app.register(cors, { origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin) || origin.startsWith('chrome-extension://')), credentials: true });
 app.register(cookie);
 app.register(jwt, { secret: process.env.AUTH_SECRET ?? 'development-only-change-me', cookie: { cookieName: 'rf_token', signed: false } });
 app.setErrorHandler((error, request, reply) => {
@@ -28,14 +29,17 @@ async function authenticatedUser(request: any, reply: any) {
     if (!user) throw new Error('User not found');
     return user;
   } catch {
-    reply.code(401).send({ error: 'Authentication required' });
+    reply.code(401).send({ error: 'Authentication required. Login first' });
     return null;
   }
 }
 
 function setAuthCookie(reply: any, token: string) {
-  const isProduction = process.env.NODE_ENV === 'production';
-  reply.setCookie('rf_token', token, { httpOnly: true, sameSite: isProduction ? 'none' : 'lax', secure: isProduction, path: '/', maxAge: 60 * 60 * 24 * 30 });
+  reply.setCookie('rf_token', token, { httpOnly: true, sameSite: 'none', secure: true, path: '/', maxAge: 60 * 60 * 24 * 30 });
+}
+
+function createAuthToken(user: { id: string; email: string }) {
+  return app.jwt.sign({ sub: user.id, email: user.email }, { expiresIn: '30d' });
 }
 
 app.get('/health', async () => ({ ok: true, service: 'referral-first-api' }));
@@ -66,7 +70,8 @@ app.post('/auth/register', async (request, reply) => {
   if (await prisma.user.findUnique({ where: { email } })) return reply.code(409).send({ error: 'Email is already registered' });
   const timezone = input.timezone ?? process.env.DEFAULT_TIMEZONE ?? 'UTC';
   const user = await prisma.user.create({ data: { email, name: input.name ?? email.split('@')[0], passwordHash: await bcrypt.hash(input.password, 12), timezone } });
-  setAuthCookie(reply, app.jwt.sign({ sub: user.id, email: user.email }));
+  const token = createAuthToken(user);
+  setAuthCookie(reply, token);
   return reply.code(201).send({ id: user.id, email: user.email, name: user.name, timezone: user.timezone });
 });
 
@@ -77,7 +82,8 @@ app.post('/auth/login', async (request, reply) => {
   if (input.timezone && user.timezone !== input.timezone) {
     await prisma.user.update({ where: { id: user.id }, data: { timezone: input.timezone } });
   }
-  setAuthCookie(reply, app.jwt.sign({ sub: user.id, email: user.email }));
+  const token = createAuthToken(user);
+  setAuthCookie(reply, token);
   return { id: user.id, email: user.email, name: user.name, timezone: input.timezone ?? user.timezone };
 });
 
@@ -114,7 +120,7 @@ app.get('/jobs', async (request, reply) => {
 app.post('/jobs', async (request, reply) => {
   const input = jobInput.parse(request.body);
   const user = await authenticatedUser(request, reply);
-  if (!user) return reply.code(401).send({ error: 'Authentication required' });
+  if (!user) return reply.code(401).send({ error: 'Authentication required. Login first' });
   const normalizedJobUrl = new URL(input.jobUrl).toString().replace(/\/$/, '').toLowerCase();
   const existingJob = await prisma.job.findFirst({ where: { userId: user.id, normalizedJobUrl } });
   if (existingJob && !existingJob.deletedAt) return reply.code(409).send({ error: 'Job already tracked' });
@@ -153,8 +159,9 @@ app.post('/jobs/:id/referral/request', async (request, reply) => {
   if (!user || !job) return reply.code(404).send({ error: 'Job not found' });
   if (job.referralStatus !== 'NOT_REQUESTED') return reply.code(409).send({ error: 'Referral has already been requested' });
   const now = new Date();
-  const followUpAt = scheduleSameDay(now, user.followUpIntervalMinutes / 60, user.timezone);
   const applyDirectAt = scheduleSameDay(now, user.applyDirectDelayMinutes / 60, user.timezone);
+  const followUpCandidate = scheduleSameDay(now, user.followUpIntervalMinutes / 60, user.timezone);
+  const followUpAt = followUpCandidate && (!applyDirectAt || followUpCandidate < applyDirectAt) ? followUpCandidate : null;
   const updated = await prisma.job.update({ where: { id: job.id }, data: { referralStatus: 'REQUESTED', referralRequestedAt: now, nextFollowUpAt: followUpAt, applyDirectNotificationAt: applyDirectAt }, include: { company: true } });
   if (followUpAt) { const notification = await prisma.notification.create({ data: { userId: user.id, jobId: job.id, type: 'FOLLOW_UP', scheduledAt: followUpAt } }); await enqueueNotification(notification.id, followUpAt); }
   if (applyDirectAt) { const notification = await prisma.notification.create({ data: { userId: user.id, jobId: job.id, type: 'APPLY_DIRECTLY', scheduledAt: applyDirectAt } }); await enqueueNotification(notification.id, applyDirectAt); }
@@ -243,8 +250,9 @@ app.patch('/settings', async (request, reply) => {
   for (const job of requestedJobs) {
     await prisma.notification.updateMany({ where: { jobId: job.id, status: 'SCHEDULED' }, data: { status: 'CANCELLED' } });
     const now = new Date();
-    const nextFollowUpAt = scheduleSameDay(now, followUpIntervalMinutes / 60, timezone);
     const applyDirectAt = job.applyDirectNotificationSentAt ? null : scheduleSameDay(now, applyDirectDelayMinutes / 60, timezone);
+    const followUpCandidate = job.applyDirectNotificationSentAt ? null : scheduleSameDay(now, followUpIntervalMinutes / 60, timezone);
+    const nextFollowUpAt = followUpCandidate && (!applyDirectAt || followUpCandidate < applyDirectAt) ? followUpCandidate : null;
     await prisma.job.update({ where: { id: job.id }, data: { nextFollowUpAt, applyDirectNotificationAt: applyDirectAt } });
     if (nextFollowUpAt) {
       const notification = await prisma.notification.create({ data: { userId: user.id, jobId: job.id, type: 'FOLLOW_UP', scheduledAt: nextFollowUpAt } });
